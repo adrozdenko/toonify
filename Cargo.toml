@@ -1,0 +1,22 @@
+[package]
+name = "toonify"
+version = "1.0.0"
+edition = "2021"
+authors = ["Your Name"]
+description = "Compress verbose browser errors for LLM consumption. Save 70-90% tokens."
+license = "MIT"
+repository = "https://github.com/adrozdenko/toonify"
+keywords = ["cli", "errors", "llm", "tokens", "compression"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+regex = "1"
+arboard = "3"
+once_cell = "1"
+colored = "2"
+
+[profile.release]
+lto = true
+strip = true
+opt-level = "z"
