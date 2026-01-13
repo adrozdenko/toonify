@@ -11,7 +11,7 @@ documentation = "https://github.com/adrozdenko/error-toon#readme"
 readme = "README.md"
 keywords = ["cli", "errors", "llm", "tokens", "compression"]
 categories = ["command-line-utilities", "development-tools"]
-exclude = [".github/*"]
+exclude = []
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
