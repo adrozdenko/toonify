@@ -224,6 +224,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
 
 [[package]]
+name = "error-toon"
+version = "1.1.0"
+dependencies = [
+ "arboard",
+ "clap",
+ "colored",
+ "once_cell",
+ "regex",
+]
+
+[[package]]
 name = "fax"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -635,17 +646,6 @@ dependencies = [
  "quick-error",
  "weezl",
  "zune-jpeg",
-]
-
-[[package]]
-name = "toonify"
-version = "1.1.0"
-dependencies = [
- "arboard",
- "clap",
- "colored",
- "once_cell",
- "regex",
 ]
 
 [[package]]
