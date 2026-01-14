@@ -130,11 +130,11 @@ TOON uses tabular arrays (`frames[N]{fields}:`) and inline objects (`stats{field
 
 ## Supported Error Types
 
-error-toon automatically detects and categorizes **26 error types**:
+error-toon automatically detects and categorizes **27 error types**:
 
 | Category | Types | Example |
 |----------|-------|---------|
-| **React/DOM** | `DOM_NESTING`, `HYDRATION`, `INVALID_HOOK`, `REACT_MINIFIED` | `<p>` inside `<p>`, server/client mismatch |
+| **React/DOM** | `DOM_NESTING`, `HYDRATION`, `INVALID_HOOK`, `REACT_MINIFIED`, `REACT_KEY` | `<p>` inside `<p>`, duplicate keys |
 | **JavaScript** | `TYPE_ERROR`, `REF_ERROR`, `SYNTAX_ERROR`, `RANGE_ERROR` | `undefined is not a function` |
 | **Network** | `CORS_ERROR`, `HTTP_ERROR`, `NETWORK_ERROR`, `WEBSOCKET_ERROR` | CORS blocked, 404/500 responses |
 | **Security** | `CSP_ERROR`, `SECURITY_ERROR`, `MIXED_CONTENT` | Content Security Policy violations |
