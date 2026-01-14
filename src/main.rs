@@ -45,6 +45,7 @@ enum ErrorType {
     Hydration,
     ReactMinified,
     InvalidHook,
+    ReactKey,
     // JavaScript errors
     TypeError,
     RefError,
@@ -88,6 +89,7 @@ impl ErrorType {
         Self::Hydration,
         Self::ReactMinified,
         Self::InvalidHook,
+        Self::ReactKey,
         // Security errors (MixedContent before SecurityError - more specific)
         Self::CorsError,
         Self::CspError,
@@ -129,6 +131,7 @@ impl ErrorType {
             Self::Hydration => "HYDRATION",
             Self::ReactMinified => "REACT_MINIFIED",
             Self::InvalidHook => "INVALID_HOOK",
+            Self::ReactKey => "REACT_KEY",
             Self::TypeError => "TYPE_ERROR",
             Self::RefError => "REF_ERROR",
             Self::SyntaxError => "SYNTAX_ERROR",
@@ -159,7 +162,7 @@ impl ErrorType {
     fn color(&self) -> Color {
         match self {
             // Warnings (yellow)
-            Self::DomNesting | Self::Deprecation => Color::Yellow,
+            Self::DomNesting | Self::Deprecation | Self::ReactKey => Color::Yellow,
             // React/Hydration (magenta)
             Self::Hydration | Self::ReactMinified | Self::InvalidHook => Color::Magenta,
             // Build tools / Testing (cyan)
@@ -176,7 +179,7 @@ impl ErrorType {
     fn icon(&self) -> &'static str {
         match self {
             Self::DomNesting => "󰅖",
-            Self::Hydration | Self::ReactMinified | Self::InvalidHook => "󰜈",
+            Self::Hydration | Self::ReactMinified | Self::InvalidHook | Self::ReactKey => "󰜈",
             Self::Storybook => "󰂺",
             Self::NextJs => "󰔶",
             Self::Playwright => "󰙨",
@@ -200,6 +203,7 @@ impl ErrorType {
             Self::Hydration => &PATTERNS.hydration,
             Self::ReactMinified => &PATTERNS.react_minified,
             Self::InvalidHook => &PATTERNS.invalid_hook,
+            Self::ReactKey => &PATTERNS.react_key,
             Self::TypeError => &PATTERNS.type_error,
             Self::RefError => &PATTERNS.ref_error,
             Self::SyntaxError => &PATTERNS.syntax_error,
@@ -240,6 +244,7 @@ struct Patterns {
     hydration: Regex,
     react_minified: Regex,
     invalid_hook: Regex,
+    react_key: Regex,
     // Detection - JavaScript errors
     type_error: Regex,
     ref_error: Regex,
@@ -298,6 +303,7 @@ impl Patterns {
             hydration: re(r"(?i)hydrat(ion|e|ing).*(?:failed|mismatch|error)"),
             react_minified: re(r"Minified React error #\d+|react\.production\.min\.js"),
             invalid_hook: re(r"(?i)Invalid hook call|Rules of Hooks|rendered more hooks"),
+            react_key: re(r"(?i)Encountered two children with the same key|Keys should be unique|Non-unique keys may cause"),
 
             // Detection - JavaScript errors (allow optional file:line prefix from browser console)
             type_error: re(r"(?m)^(?:\S+:\d+\s+)?TypeError:|Uncaught TypeError"),
@@ -408,6 +414,7 @@ fn extract_issue(input: &str, error_type: ErrorType) -> Option<String> {
         ErrorType::Hydration => find_line_containing(input, &["hydration", "mismatch", "server", "client"]),
         ErrorType::ReactMinified => find_line_containing(input, &["Minified React error", "react.production"]),
         ErrorType::InvalidHook => find_line_containing(input, &["Invalid hook", "Rules of Hooks", "rendered more hooks"]),
+        ErrorType::ReactKey => find_line_starting_with(input, &["Encountered two children with the same key"]),
 
         // JavaScript errors
         ErrorType::TypeError => find_line_starting_with(input, &["TypeError:", "Uncaught TypeError"]),
@@ -999,6 +1006,30 @@ mod tests {
         let input = "Invalid hook call. Hooks can only be called inside of the body of a function component.";
         let result = detect_error_type(input);
         assert_eq!(result, Some(ErrorType::InvalidHook));
+    }
+
+    #[test]
+    fn detects_react_key_error() {
+        let input = "Encountered two children with the same key, `?path=/docs/foundation-related--docs`. Keys should be unique.";
+        let result = detect_error_type(input);
+        assert_eq!(result, Some(ErrorType::ReactKey));
+    }
+
+    #[test]
+    fn detects_react_key_error_verbose() {
+        let input = r#"DocPage.tsx:428 Encountered two children with the same key, `?path=/docs/foundation-related--docs`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version.
+(anonymous) @ chunk-ZJ2MJDOW.js?v=9079ec11:4925
+runWithFiberInDEV @ chunk-ZJ2MJDOW.js?v=9079ec11:997"#;
+        let result = detect_error_type(input);
+        assert_eq!(result, Some(ErrorType::ReactKey));
+    }
+
+    #[test]
+    fn extracts_react_key_issue() {
+        let input = "Encountered two children with the same key, `test-key`. Keys should be unique.";
+        let result = ToonifiedError::new(input, ErrorType::ReactKey);
+        assert!(result.issue.is_some());
+        assert!(result.issue.unwrap().contains("same key"));
     }
 
     #[test]
