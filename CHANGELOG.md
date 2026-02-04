@@ -5,7 +5,7 @@ All notable changes to error-toon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.0] - 2026-02-05
 
 ### Added
 - **Multi-error separation**: When input contains multiple errors, they are now automatically split into separate blocks. Each error retains its own stack frames — no more mixing frames from different errors.
@@ -62,7 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Initial public release
 
-[Unreleased]: https://github.com/adrozdenko/error-toon/compare/v1.1.5...HEAD
+[1.2.0]: https://github.com/adrozdenko/error-toon/compare/v1.1.5...v1.2.0
 [1.1.5]: https://github.com/adrozdenko/error-toon/compare/v1.1.4...v1.1.5
 [1.1.4]: https://github.com/adrozdenko/error-toon/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/adrozdenko/error-toon/compare/v1.1.0...v1.1.3

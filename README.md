@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/adrozdenko/error-toon/actions"><img src="https://img.shields.io/github/actions/workflow/status/anthropics/error-toon/ci.yml?style=flat-square" alt="Build Status"></a>
+  <a href="https://github.com/adrozdenko/error-toon/actions"><img src="https://img.shields.io/github/actions/workflow/status/adrozdenko/error-toon/publish.yml?style=flat-square" alt="Build Status"></a>
   <a href="https://crates.io/crates/error-toon"><img src="https://img.shields.io/crates/v/error-toon.svg?style=flat-square" alt="Crates.io"></a>
   <a href="https://github.com/adrozdenko/error-toon/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square" alt="License"></a>
 </p>
