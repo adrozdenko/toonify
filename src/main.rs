@@ -14,6 +14,12 @@ const CONTENT_WIDTH: usize = BOX_WIDTH - 4; // Account for "│ " and " │"
 const TRUNCATE_WIDTH: usize = CONTENT_WIDTH - 3; // Account for "..."
 const SOURCE_EXTENSIONS: &str = r"mdx|tsx|jsx|ts|js|vue|svelte";
 
+// Stats line overhead estimates for multi-error output
+// Format: "compressed: Nc → Nc (N% saved, N errors)" ≈ 50 chars max
+const MULTI_ERROR_PLAIN_STATS_OVERHEAD: usize = 50;
+// Format: "stats{orig,comp,pct,count}: N,N,N,N" ≈ 60 chars max
+const MULTI_ERROR_TOON_STATS_OVERHEAD: usize = 60;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // CLI
 // ─────────────────────────────────────────────────────────────────────────────
@@ -303,7 +309,7 @@ impl Patterns {
             hydration: re(r"(?i)hydrat(ion|e|ing).*(?:failed|mismatch|error)"),
             react_minified: re(r"Minified React error #\d+|react\.production\.min\.js"),
             invalid_hook: re(r"(?i)Invalid hook call|Rules of Hooks|rendered more hooks"),
-            react_key: re(r"(?i)Encountered two children with the same key|Keys should be unique|Non-unique keys may cause"),
+            react_key: re(r"(?i)Encountered two children with the same key|Keys should be unique|Non-unique keys may cause|unique .?key.? prop"),
 
             // Detection - JavaScript errors (allow optional file:line prefix from browser console)
             type_error: re(r"(?m)^(?:\S+:\d+\s+)?TypeError:|Uncaught TypeError"),
@@ -380,6 +386,75 @@ fn detect_error_type(input: &str) -> Option<ErrorType> {
         .iter()
         .find(|t| t.pattern().is_match(input))
         .copied()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Multi-Error Splitting
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Check if a line is a stack frame (starts with whitespace + "at " or "@")
+fn is_stack_frame_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    // Lines that start with whitespace and contain "at " or "@" are stack frames
+    (line.starts_with(' ') || line.starts_with('\t'))
+        && (trimmed.starts_with("at ") || trimmed.starts_with("@ ") || trimmed.contains(" @ "))
+}
+
+/// Check if a line starts a new error (matches any `ErrorType` pattern and is not a stack frame)
+fn is_error_boundary(line: &str) -> bool {
+    // Stack frames are never boundaries
+    if is_stack_frame_line(line) {
+        return false;
+    }
+
+    let trimmed = line.trim();
+
+    // Empty or whitespace-only lines are not boundaries
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    // Reuse existing patterns - same logic as detect_error_type()
+    // Note: Some patterns (like RuntimeError's stack_trace) use multiline matching
+    // which won't work on single lines, so we also check for generic error starts
+    if ErrorType::ALL.iter().any(|t| t.pattern().is_match(line)) {
+        return true;
+    }
+
+    // Additional check for generic error starts that multiline patterns miss
+    // e.g., "Error: Cannot update a component..."
+    trimmed.starts_with("Error:") ||
+    trimmed.starts_with("Uncaught Error:") ||
+    trimmed.starts_with("Warning:")
+}
+
+/// Split input containing multiple errors into separate error blocks.
+/// Each block contains one error with its associated stack frames.
+fn split_into_error_blocks(input: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut current_block = String::new();
+
+    for line in input.lines() {
+        let is_error_start = is_error_boundary(line);
+
+        if is_error_start && !current_block.trim().is_empty() {
+            // Save previous block, start new one
+            blocks.push(current_block.trim().to_string());
+            current_block = String::new();
+        }
+
+        if !current_block.is_empty() {
+            current_block.push('\n');
+        }
+        current_block.push_str(line);
+    }
+
+    // Don't forget last block
+    if !current_block.trim().is_empty() {
+        blocks.push(current_block.trim().to_string());
+    }
+
+    blocks
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -726,6 +801,150 @@ impl ToonifiedError {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Multi-Error Formatters
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Format multiple errors in plain format with separator between errors
+fn format_multi_plain(errors: &[ToonifiedError], total_original_len: usize) -> String {
+    let mut output_parts: Vec<String> = Vec::new();
+
+    for (i, error) in errors.iter().enumerate() {
+        let mut lines = vec![format!("type: {}", error.error_type.name())];
+
+        if let Some(ref loc) = error.file_location {
+            lines.push(format!("file: {}", loc));
+        }
+
+        if let Some(ref issue) = error.issue {
+            lines.push(format!("issue: {}", issue));
+        }
+
+        if !error.frames.is_empty() {
+            lines.push("frames:".to_string());
+            for frame in &error.frames {
+                lines.push(format!("  {}", frame));
+            }
+        }
+
+        if i < errors.len() - 1 {
+            lines.push(String::new());
+        }
+
+        output_parts.push(lines.join("\n"));
+    }
+
+    let content = output_parts.join("\n===\n");
+    let compressed_len = content.len() + MULTI_ERROR_PLAIN_STATS_OVERHEAD;
+    let savings = if total_original_len > compressed_len {
+        ((total_original_len - compressed_len) * 100) / total_original_len
+    } else {
+        0
+    };
+
+    format!(
+        "{}\n\n---\ncompressed: {}c → {}c ({}% saved, {} errors)",
+        content, total_original_len, compressed_len, savings, errors.len()
+    )
+}
+
+/// Format multiple errors in TOON format
+fn format_multi_toon(errors: &[ToonifiedError], total_original_len: usize) -> String {
+    let mut lines = vec![format!("errors[{}]:", errors.len())];
+
+    for error in errors {
+        lines.push("---".to_string());
+        lines.push(format!("type: {}", error.error_type.name()));
+
+        if let Some(ref loc) = error.file_location {
+            lines.push(format!("file: {}", loc));
+        }
+
+        if let Some(ref issue) = error.issue {
+            let escaped_issue = issue.replace(',', "\\,");
+            lines.push(format!("issue: {}", escaped_issue));
+        }
+
+        if !error.frames.is_empty() {
+            let parsed_frames: Vec<(String, String)> = error.frames
+                .iter()
+                .map(|f| parse_frame(f))
+                .collect();
+
+            lines.push(format!("frames[{}]{{fn,loc}}:", parsed_frames.len()));
+            for (func, loc) in parsed_frames {
+                lines.push(format!("  {},{}", func, loc));
+            }
+        }
+    }
+
+    // Add separator and stats placeholder to calculate final length
+    lines.push("===".to_string());
+
+    // Calculate compressed length (content + stats line)
+    let content_without_stats = lines.join("\n");
+    let compressed_len = content_without_stats.len() + MULTI_ERROR_TOON_STATS_OVERHEAD;
+    let savings = if total_original_len > compressed_len {
+        ((total_original_len - compressed_len) * 100) / total_original_len
+    } else {
+        0
+    };
+
+    lines.push(format!("stats{{orig,comp,pct,count}}: {},{},{},{}",
+        total_original_len, compressed_len, savings, errors.len()));
+
+    lines.join("\n")
+}
+
+/// Format multiple errors in colored format (multiple boxes)
+fn format_multi_colored(errors: &[ToonifiedError], total_original_len: usize) -> String {
+    let mut boxes: Vec<String> = Vec::new();
+
+    for error in errors {
+        let color = error.error_type.color();
+        let mut box_lines = BoxBuilder::new(color);
+
+        box_lines.header(&format!("{} {}", error.error_type.icon(), error.error_type.name()));
+
+        if let Some(ref loc) = error.file_location {
+            box_lines.row(&format!(" {}", loc), Color::White);
+        }
+
+        if let Some(ref issue) = error.issue {
+            box_lines.row(&format!(" {}", truncate(issue, TRUNCATE_WIDTH)), Color::Yellow);
+        }
+
+        if !error.frames.is_empty() {
+            box_lines.row("frames:", Color::BrightBlack);
+            for frame in &error.frames {
+                box_lines.row(&format!("  {}", truncate(frame, TRUNCATE_WIDTH - 2)), Color::Cyan);
+            }
+        }
+
+        boxes.push(box_lines.build());
+    }
+
+    // Calculate aggregate stats
+    let plain_output = format_multi_plain(errors, total_original_len);
+    let compressed_len = plain_output.len();
+    let savings = if total_original_len > compressed_len {
+        ((total_original_len - compressed_len) * 100) / total_original_len
+    } else {
+        0
+    };
+
+    let stats_line = format!(
+        "\n{} {} errors: {}c → {}c ({}% saved)",
+        "📦".green(),
+        errors.len(),
+        total_original_len,
+        compressed_len,
+        savings
+    ).green().to_string();
+
+    format!("{}\n{}", boxes.join("\n\n"), stats_line)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Box Drawing Helper
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -856,38 +1075,63 @@ fn main() {
         Err(e) => exit_with_error(e),
     };
 
-    let error_type = match detect_error_type(&input) {
-        Some(t) => t,
-        None => {
-            eprintln!("{}", "Not a recognizable error. Passing through.".yellow());
-            println!("{}", input);
-            return;
+    let total_original_len = input.len();
+
+    // Split input into separate error blocks
+    let blocks = split_into_error_blocks(&input);
+
+    // Process each block into a ToonifiedError
+    let results: Vec<ToonifiedError> = blocks
+        .iter()
+        .filter_map(|block| {
+            detect_error_type(block).map(|et| ToonifiedError::new(block, et))
+        })
+        .collect();
+
+    if results.is_empty() {
+        eprintln!("{}", "Not a recognizable error. Passing through.".yellow());
+        println!("{}", input);
+        return;
+    }
+
+    // Select output format based on number of errors
+    let copyable_output = if results.len() == 1 {
+        // Single error: use existing formatters for backward compatibility
+        if args.toon {
+            results[0].format_toon()
+        } else {
+            results[0].format_plain()
         }
-    };
-
-    let result = ToonifiedError::new(&input, error_type);
-
-    // Select output format
-    let copyable_output = if args.toon {
-        result.format_toon()
     } else {
-        result.format_plain()
+        // Multiple errors: use multi-error formatters
+        if args.toon {
+            format_multi_toon(&results, total_original_len)
+        } else {
+            format_multi_plain(&results, total_original_len)
+        }
     };
 
     // Display
     if args.toon || args.plain || !io::stdout().is_terminal() {
         println!("{}", copyable_output);
+    } else if results.len() == 1 {
+        println!("{}", results[0].format_colored());
     } else {
-        println!("{}", result.format_colored());
+        println!("{}", format_multi_colored(&results, total_original_len));
     }
 
     // Copy to clipboard by default (unless --no-copy or piped output)
     let should_copy = !args.no_copy && io::stdout().is_terminal();
     if should_copy {
         let format_name = if args.toon { "TOON" } else { "plain" };
+        let count_info = if results.len() > 1 {
+            format!(", {} errors", results.len())
+        } else {
+            String::new()
+        };
         match Clipboard::new() {
             Ok(mut clipboard) => match clipboard.set_text(&copyable_output) {
-                Ok(_) => eprintln!("{}", format!("📋 Copied to clipboard ({})", format_name).green()),
+                Ok(_) => eprintln!("{}", format!("📋 Copied to clipboard ({}{})", format_name, count_info).green()),
                 Err(_) => eprintln!("{}", "⚠ Failed to write to clipboard".yellow()),
             },
             Err(_) => eprintln!("{}", "⚠ Clipboard not available".yellow()),
@@ -1796,5 +2040,233 @@ runWithFiberInDEV @ chunk-ZJ2MJDOW.js?v=9079ec11:997"#;
         let result = ToonifiedError::new(input, ErrorType::Playwright);
         assert!(result.issue.is_some());
         assert!(result.issue.unwrap().contains("Timeout"));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Multi-Error Splitting Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn splits_two_errors_on_blank_line() {
+        let input = "TypeError: foo\n    at a.tsx:1\n\nReferenceError: bar\n    at b.tsx:2";
+        let blocks = split_into_error_blocks(input);
+        assert_eq!(blocks.len(), 2);
+    }
+
+    #[test]
+    fn splits_errors_without_blank_line() {
+        // Browser console often has no blank lines between errors
+        let input = "TypeError: foo\n    at a.tsx:1\nReferenceError: bar\n    at b.tsx:2";
+        let blocks = split_into_error_blocks(input);
+        assert_eq!(blocks.len(), 2);
+    }
+
+    #[test]
+    fn preserves_frames_with_their_error() {
+        let input = "TypeError: foo\n    at a.tsx:1\n    at b.tsx:2\n\nReferenceError: bar\n    at c.tsx:3";
+        let blocks = split_into_error_blocks(input);
+        assert!(blocks[0].contains("a.tsx") && blocks[0].contains("b.tsx"));
+        assert!(blocks[1].contains("c.tsx"));
+        assert!(!blocks[0].contains("c.tsx")); // Frame not mixed
+    }
+
+    #[test]
+    fn single_error_returns_one_block() {
+        let input = "TypeError: foo\n    at a.tsx:1";
+        let blocks = split_into_error_blocks(input);
+        assert_eq!(blocks.len(), 1);
+    }
+
+    #[test]
+    fn handles_browser_console_prefix() {
+        let input = "bundle.js:42 TypeError: foo\n    at a.tsx:1\n\napp.js:10 ReferenceError: bar";
+        let blocks = split_into_error_blocks(input);
+        assert_eq!(blocks.len(), 2);
+    }
+
+    #[test]
+    fn keeps_multiline_message_together() {
+        // Lines without error patterns stay with current block
+        let input = "Warning: Each child should have unique key.\nCheck the render method of ProductList.\n    at ProductList (file.tsx:1)";
+        let blocks = split_into_error_blocks(input);
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].contains("Check the render method"));
+    }
+
+    #[test]
+    fn handles_three_different_error_types() {
+        let input = "TypeError: a\n    at x.tsx:1\nSyntaxError: b\n    at y.tsx:2\nReferenceError: c\n    at z.tsx:3";
+        let blocks = split_into_error_blocks(input);
+        assert_eq!(blocks.len(), 3);
+    }
+
+    #[test]
+    fn empty_input_returns_empty() {
+        let blocks = split_into_error_blocks("");
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn unrecognized_text_returns_single_block() {
+        let input = "Some random text\nwithout errors";
+        let blocks = split_into_error_blocks(input);
+        // Returns as single block (will be filtered later if no error detected)
+        assert_eq!(blocks.len(), 1);
+    }
+
+    #[test]
+    fn multi_error_detection() {
+        let input = "TypeError: a\n    at x.tsx:1\n\nReferenceError: b\n    at y.tsx:2";
+        let blocks = split_into_error_blocks(input);
+        let errors: Vec<_> = blocks.iter()
+            .filter_map(|b| detect_error_type(b).map(|t| ToonifiedError::new(b, t)))
+            .collect();
+        assert_eq!(errors.len(), 2);
+        assert_eq!(errors[0].error_type, ErrorType::TypeError);
+        assert_eq!(errors[1].error_type, ErrorType::RefError);
+    }
+
+    #[test]
+    fn integration_original_test_case() {
+        // The exact input from the bug report
+        let input = r#"Uncaught Error: Minified React error #130; visit https://reactjs.org/docs/error-decoder.html
+    at Object.throw (react-dom.production.min.js:189:327)
+
+Warning: Each child in a list should have a unique "key" prop.
+    at ProductItem (http://localhost:3000/bundle.js:1234:17)
+    at ProductList (http://localhost:3000/bundle.js:5678:23)
+
+Error: Cannot update a component while rendering a different component
+    at UserProfile (http://localhost:3000/bundle.js:4521:19)"#;
+
+        let blocks = split_into_error_blocks(input);
+        assert_eq!(blocks.len(), 3, "Should split into 3 separate errors");
+
+        // Verify frames are NOT mixed
+        assert!(blocks[0].contains("react-dom.production.min.js"));
+        assert!(!blocks[0].contains("ProductItem")); // Not mixed!
+
+        assert!(blocks[1].contains("ProductItem"));
+        assert!(blocks[1].contains("ProductList"));
+        assert!(!blocks[1].contains("UserProfile")); // Not mixed!
+
+        assert!(blocks[2].contains("UserProfile"));
+    }
+
+    #[test]
+    fn multi_error_plain_format() {
+        let input1 = "TypeError: foo\n    at a.tsx:1";
+        let input2 = "ReferenceError: bar\n    at b.tsx:2";
+        let errors = vec![
+            ToonifiedError::new(input1, ErrorType::TypeError),
+            ToonifiedError::new(input2, ErrorType::RefError),
+        ];
+        let output = format_multi_plain(&errors, 100);
+        assert!(output.contains("type: TYPE_ERROR"));
+        assert!(output.contains("type: REF_ERROR"));
+        assert!(output.contains("==="));
+        assert!(output.contains("2 errors"));
+    }
+
+    #[test]
+    fn multi_error_toon_format() {
+        let input1 = "TypeError: foo\n    at a.tsx:1";
+        let input2 = "ReferenceError: bar\n    at b.tsx:2";
+        let errors = vec![
+            ToonifiedError::new(input1, ErrorType::TypeError),
+            ToonifiedError::new(input2, ErrorType::RefError),
+        ];
+        let output = format_multi_toon(&errors, 100);
+        assert!(output.contains("errors[2]:"));
+        assert!(output.contains("type: TYPE_ERROR"));
+        assert!(output.contains("type: REF_ERROR"));
+        assert!(output.contains("stats{orig,comp,pct,count}:"));
+    }
+
+    #[test]
+    fn is_stack_frame_line_detects_at_pattern() {
+        assert!(is_stack_frame_line("    at foo (file.tsx:1)"));
+        assert!(is_stack_frame_line("\tat bar (file.tsx:2)"));
+        assert!(is_stack_frame_line("  @ baz (file.tsx:3)"));
+        assert!(!is_stack_frame_line("TypeError: foo"));
+        assert!(!is_stack_frame_line("at start of line"));
+    }
+
+    #[test]
+    fn is_error_boundary_detects_errors() {
+        assert!(is_error_boundary("TypeError: foo"));
+        assert!(is_error_boundary("ReferenceError: bar"));
+        assert!(is_error_boundary("SyntaxError: baz"));
+        assert!(!is_error_boundary("    at foo (file.tsx:1)"));
+        assert!(!is_error_boundary(""));
+        assert!(!is_error_boundary("   "));
+    }
+
+    #[test]
+    fn single_error_backward_compatible() {
+        // Single error should produce same output as before multi-error feature
+        let input = "TypeError: Cannot read properties of undefined (reading 'map')";
+        let blocks = split_into_error_blocks(input);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0], input);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Edge Case Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn handles_input_starting_with_stack_frame() {
+        // Edge case: input starts with what looks like a stack frame (orphaned)
+        let input = "    at orphan (file.tsx:1)\nTypeError: foo\n    at bar (file.tsx:2)";
+        let blocks = split_into_error_blocks(input);
+        // The orphan frame becomes part of first block, then TypeError starts new block
+        assert_eq!(blocks.len(), 2);
+        assert!(blocks[1].contains("TypeError"));
+    }
+
+    #[test]
+    fn handles_windows_line_endings() {
+        // Windows CRLF line endings
+        let input = "TypeError: foo\r\n    at a.tsx:1\r\n\r\nReferenceError: bar\r\n    at b.tsx:2";
+        let blocks = split_into_error_blocks(input);
+        assert_eq!(blocks.len(), 2);
+    }
+
+    #[test]
+    fn handles_error_without_stack_frames() {
+        // Error message without any stack trace
+        let input = "TypeError: foo\n\nReferenceError: bar";
+        let blocks = split_into_error_blocks(input);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].trim(), "TypeError: foo");
+        assert_eq!(blocks[1].trim(), "ReferenceError: bar");
+    }
+
+    #[test]
+    fn handles_whitespace_only_lines_between_errors() {
+        let input = "TypeError: foo\n    at a.tsx:1\n   \n   \nReferenceError: bar\n    at b.tsx:2";
+        let blocks = split_into_error_blocks(input);
+        assert_eq!(blocks.len(), 2);
+    }
+
+    #[test]
+    fn handles_mixed_indentation_in_frames() {
+        // Some stack frames use spaces, others use tabs
+        let input = "TypeError: foo\n    at a.tsx:1\n\tat b.tsx:2\n  at c.tsx:3";
+        let blocks = split_into_error_blocks(input);
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].contains("a.tsx"));
+        assert!(blocks[0].contains("b.tsx"));
+        assert!(blocks[0].contains("c.tsx"));
+    }
+
+    #[test]
+    fn handles_very_long_error_message() {
+        let long_msg = "x".repeat(5000);
+        let input = format!("TypeError: {}\n    at a.tsx:1", long_msg);
+        let blocks = split_into_error_blocks(&input);
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].len() > 5000);
     }
 }

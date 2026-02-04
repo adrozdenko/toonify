@@ -14,7 +14,9 @@
 
 ## The Problem
 
-When you copy a browser console error and paste it to an LLM, you're wasting tokens on noise:
+When you copy a browser console error and paste it to an LLM, you're wasting tokens on noise.
+
+**Even worse:** when your console contains **multiple errors**, they all get mixed together:
 
 ```
 Warning: validateDOMNesting(...): <p> cannot appear as a descendant of <p>.
@@ -128,6 +130,70 @@ TOON uses tabular arrays (`frames[N]{fields}:`) and inline objects (`stats{field
 
 ---
 
+## Multi-Error Support
+
+When your console contains multiple errors, error-toon automatically separates them:
+
+```bash
+# Input: 3 mixed errors from console
+error-toon --plain
+```
+
+```
+type: REACT_MINIFIED
+file: react-dom.production.min.js:189
+issue: Minified React error #130
+
+===
+type: REACT_KEY
+file: bundle.js:1234
+frames:
+  at ProductItem (bundle.js:1234:17)
+  at ProductList (bundle.js:5678:23)
+
+===
+type: RUNTIME_ERROR
+file: bundle.js:4521
+issue: Cannot update a component while rendering
+frames:
+  at UserProfile (bundle.js:4521:19)
+
+---
+compressed: 2499c → 650c (74% saved, 3 errors)
+```
+
+Each error keeps its own stack frames — no more mixing frames from different errors!
+
+### TOON Multi-Error Format
+
+```bash
+error-toon --toon
+```
+
+```
+errors[3]:
+---
+type: REACT_MINIFIED
+file: react-dom.production.min.js:189
+issue: Minified React error #130
+---
+type: REACT_KEY
+file: bundle.js:1234
+frames[2]{fn,loc}:
+  ProductItem,bundle.js:1234
+  ProductList,bundle.js:5678
+---
+type: RUNTIME_ERROR
+file: bundle.js:4521
+issue: Cannot update a component while rendering
+frames[1]{fn,loc}:
+  UserProfile,bundle.js:4521
+===
+stats{orig,comp,pct,count}: 2499,650,74,3
+```
+
+---
+
 ## Supported Error Types
 
 error-toon automatically detects and categorizes **27 error types**:
@@ -150,27 +216,31 @@ Each type has optimized extraction rules to capture the most relevant informatio
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     Browser Console Error                        │
+│                     Browser Console Error(s)                     │
 │  4000+ chars of webpack paths, React internals, cache hashes    │
+│  Multiple errors mixed together with overlapping stack traces   │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                         error-toon                                  │
-│  1. Detect error type (25 patterns)                              │
-│  2. Extract file location (prefers user code)                    │
-│  3. Extract error message                                        │
-│  4. Filter stack frames (removes framework noise)                │
+│                         error-toon                              │
+│  1. Split into separate error blocks (multi-error detection)    │
+│  2. Detect error type per block (27 patterns)                   │
+│  3. Extract file location (prefers user code)                   │
+│  4. Extract error message                                       │
+│  5. Filter stack frames (removes framework noise)               │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                     Compressed Output                            │
-│  ~200 chars: type, file, issue, relevant frames                  │
+│                     Compressed Output                           │
+│  ~200 chars per error: type, file, issue, relevant frames       │
+│  Each error with its own stack frames (never mixed!)            │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 **Key optimizations:**
+- **Multi-error separation** — Splits multiple errors, keeps frames with their error
 - **Smart file detection** — Finds your code, not `node_modules`
 - **Framework noise filter** — Removes React, Webpack, Vite internals
 - **Context-aware extraction** — Different logic per error type
@@ -240,6 +310,7 @@ PRs welcome! Ideas:
 - [ ] Homebrew formula
 - [ ] GitHub Actions releases
 - [ ] VS Code extension
+- [x] Multi-error separation (completed in v1.2.0)
 
 ### Development
 
